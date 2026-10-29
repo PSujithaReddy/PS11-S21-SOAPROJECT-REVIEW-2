@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Smart Urban Mobility</title>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 40px; background: #f8f9fa; color: #333; }
+        .container { max-width: 900px; margin: auto; background: #ffffff; padding: 25px; border-radius: 10px; box-shadow: 0 4px 12px rgba(0,0,0,0.05); }
+        .badge { background: #007bff; color: white; padding: 6px 12px; border-radius: 6px; font-weight: bold; float: right; font-size: 0.9em; margin-top: 5px; }
+        .stats-banner { background: #e9ecef; padding: 15px; margin: 15px 0; border-radius: 8px; display: flex; justify-content: space-around; font-weight: 600; color: #495057; border: 1px solid #dee2e6; }
+        .admin-panel { background: #f1f3f5; padding: 15px; margin: 15px 0; border-radius: 8px; border: 1px solid #dee2e6; display: flex; gap: 10px; }
+        input, select { padding: 10px; margin: 5px 0; width: 100%; box-sizing: border-box; border: 1px solid #ced4da; border-radius: 5px; background: #ffffff; }
+        button { background: #28a745; color: white; border: none; cursor: pointer; font-weight: bold; padding: 10px; margin: 5px 0; border-radius: 5px; width: 100%; transition: 0.2s; }
+        button:hover { opacity: 0.9; }
+        .btn-info { background: #17a2b8; }
+        .btn-danger { background: #dc3545; }
+        .btn-warning { background: #ffc107; color: #212529; }
+        .btn-secondary { background: #6c757d; }
+        .slot { border: 1px solid #e9ecef; background: #ffffff; padding: 15px; margin: 10px 0; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.02); }
+        .hidden { display: none !important; }
+        .flex-row { display: flex; gap: 10px; align-items: center; }
+        .nav-tabs { display: flex; gap: 10px; margin-bottom: 20px; border-bottom: 2px solid #dee2e6; padding-bottom: 10px; }
+        .nav-tabs button { background: #e9ecef; color: #495057; width: auto; padding: 10px 20px; border-radius: 5px 5px 0 0; }
+        .nav-tabs button.active { background: #007bff; color: white; }
+        .live-card { background: #212529; color: #00ff00; padding: 15px; border-radius: 8px; font-family: monospace; font-size: 1.1em; margin-bottom: 10px; }
+        .cost-ticker { color: #ffc107; font-size: 1.2em; font-weight: bold; float: right; }
+    </style>
+</head>
+<body>
+<div class="container">
+    <h2>Urban Mobility <span id="lb-badge" class="badge hidden">Served by Port: N/A</span></h2>
+    
+    <div id="login-section">
+        <h3>Admin Access</h3>
+        <input type="text" id="username" placeholder="Username (admin)">
+        <input type="password" id="password" placeholder="Password (admin)">
+        <button onclick="login()">Login</button>
+    </div>
+
+    <div id="app-section" class="hidden">
+        <div class="nav-tabs">
+            <button id="tab-manage" class="active" onclick="switchTab('manage')">Management & Booking</button>
+            <button id="tab-monitor" onclick="switchTab('monitor')">Live Monitor Dashboard</button>
+        </div>
+
+        <div class="stats-banner" id="stats-banner"></div>
+
+        <div id="manage-view">
+            <div class="admin-panel">
+                <input type="text" id="new-name" placeholder="Slot Name (e.g. E5)">
+                <input type="text" id="new-zone" placeholder="Zone Name">
+                <input type="number" id="new-rate" placeholder="Rate/hr ($)" style="width: 150px;">
+                <button class="btn-secondary" onclick="createSlot()" style="width: 150px;">+ Add Slot</button>
+            </div>
+            
+            <button class="btn-info" onclick="loadSlots()" style="margin-bottom: 10px;">Refresh Data (Test Load Balancer)</button>
+            <div id="slots-container"></div>
+        </div>
+
+        <div id="monitor-view" class="hidden">
+            <h3>Live Vehicle Tracking</h3>
+            <p style="color: #6c757d; font-size: 0.9em;">*Simulator Speed: 10 real seconds = 1 simulated hour</p>
+            <div id="live-monitor-container"></div>
+        </div>
+    </div>
+</div>
+
+<script>
+    let jwtToken = "";
+    let globalSlots = [];
+    let monitorInterval;
+
+    async function login() {
+        const res = await fetch('/auth/login', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({username: document.getElementById('username').value, password: document.getElementById('password').value})
+        });
+        const data = await res.json();
+        if (data.token) {
+            jwtToken = data.token;
+            document.getElementById('login-section').classList.add('hidden');
+            document.getElementById('app-section').classList.remove('hidden');
+            document.getElementById('lb-badge').classList.remove('hidden');
+            loadSlots();
+            monitorInterval = setInterval(updateLiveMonitor, 100); 
+        } else {
+            alert("Login Failed");
+        }
+    }
+
+    function switchTab(tab) {
+        document.getElementById('tab-manage').classList.remove('active');
+        document.getElementById('tab-monitor').classList.remove('active');
+        document.getElementById('manage-view').classList.add('hidden');
+        document.getElementById('monitor-view').classList.add('hidden');
+        
+        document.getElementById('tab-' + tab).classList.add('active');
+        document.getElementById(tab + '-view').classList.remove('hidden');
+    }
+
+    async function loadSlots() {
+        const res = await fetch('/parking/slots', { headers: { 'Authorization': jwtToken } });
+        if (res.status === 401) return alert("Unauthorized! JWT invalid.");
+        const data = await res.json();
+        document.getElementById('lb-badge').innerText = "Served by Port: " + data.handledByPort;
+        globalSlots = data.slots;
+        renderManageView();
+    }
+
+    function renderManageView() {
+        let availableCount = globalSlots.filter(s => s.isAvailable).length;
+        document.getElementById('stats-banner').innerHTML = `
+            <span>Total Slots: ${globalSlots.length}</span>
+            <span style="color: #28a745;">Available: ${availableCount}</span>
+            <span style="color: #dc3545;">Occupied: ${globalSlots.length - availableCount}</span>
+        `;
+
+        let html = "";
+        globalSlots.forEach(slot => {
+            html += `<div class="slot">
+                <strong style="font-size: 1.1em; color: #212529;">${slot.name}</strong> 
+                <span style="color: #6c757d;">(${slot.zone})</span> - $${slot.hourlyRate}/hr <br>
+                <div style="margin: 8px 0;">Status: <b>${slot.isAvailable ? "<span style='color:#28a745'>AVAILABLE</span>" : "<span style='color:#dc3545'>OCCUPIED (LOCKED)</span>"}</b></div>
+                
+                ${slot.isAvailable ? 
+                    `<div class="flex-row">
+                        <input type="text" id="plate-${slot.id}" placeholder="Vehicle Num (AP-39-XY)" style="flex: 2;">
+                        <input type="text" id="driver-${slot.id}" placeholder="Driver Name" style="flex: 2;">
+                     </div>
+                     <div class="flex-row">
+                        <select id="type-${slot.id}" style="flex: 1;">
+                            <option value="Standard">Standard Vehicle</option>
+                            <option value="EV">EV (20% Discount)</option>
+                        </select>
+                        <button style="flex: 1;" onclick="book('${slot.id}')">Assign Vehicle to Slot</button> 
+                     </div>
+                     <div class="flex-row">
+                         <button class="btn-warning" style="flex: 1;" onclick="updateSlot('${slot.id}')">Edit Rate (Admin)</button>
+                         <button class="btn-danger" style="flex: 1;" onclick="deleteSlot('${slot.id}')">Delete Slot (Admin)</button>
+                     </div>` : 
+                    `<div style="background:#f8d7da; padding:10px; border-radius:5px; margin-bottom:10px;">
+                        Vehicle <b>${slot.vehiclePlate}</b> (${slot.vehicleType}) driven by <b>${slot.driverName}</b> is currently locked into this slot.
+                     </div>
+                     <button class="btn-warning" onclick="leave('${slot.id}')">Checkout & Free Slot</button>`}
+            </div>`;
+        });
+        document.getElementById('slots-container').innerHTML = html;
+    }
+
+    function updateLiveMonitor() {
+        if (document.getElementById('monitor-view').classList.contains('hidden')) return;
+
+        let html = "";
+        let occupiedSlots = globalSlots.filter(s => !s.isAvailable);
+
+        if(occupiedSlots.length === 0) {
+            html = `<p style="color: #6c757d;">No vehicles currently parked.</p>`;
+        } else {
+            const now = Date.now();
+            occupiedSlots.forEach(slot => {
+                let elapsedMs = now - slot.entryTime;
+                let simulatedHours = elapsedMs / 10000.0;
+                let liveCost = simulatedHours * slot.hourlyRate;
+                if(slot.vehicleType === 'EV') liveCost *= 0.8;
+
+                let totalSeconds = Math.floor(elapsedMs / 1000);
+                let mins = String(Math.floor(totalSeconds / 60)).padStart(2, '0');
+                let secs = String(totalSeconds % 60).padStart(2, '0');
+
+                html += `
+                <div class="live-card">
+                    <div>Slot: <b>${slot.name}</b> | Vehicle: <b>${slot.vehiclePlate}</b> (${slot.vehicleType})</div>
+                    <div style="margin-top: 10px;">
+                        Time Elapsed: <span style="color: #17a2b8;">${mins}:${secs}</span>
+                        <span class="cost-ticker">Live Cost: $${liveCost.toFixed(2)}</span>
+                    </div>
+                </div>`;
+            });
+        }
+        document.getElementById('live-monitor-container').innerHTML = html;
+    }
+
+    async function createSlot() {
+        const name = document.getElementById('new-name').value;
+        const zone = document.getElementById('new-zone').value;
+        const rate = document.getElementById('new-rate').value;
+        if(!name || !zone || !rate) return alert("Fill all fields.");
+        await fetch('/parking/slots', {
+            method: 'POST',
+            headers: { 'Authorization': jwtToken, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ id: Math.random().toString(36).substring(2, 9), name: name, zone: zone, hourlyRate: parseFloat(rate) })
+        });
+        loadSlots(); 
+    }
+
+    async function updateSlot(id) {
+        const slot = globalSlots.find(s => s.id === id);
+        const newRate = prompt(`Enter new hourly rate for ${slot.name}:`, slot.hourlyRate);
+        if(newRate !== null && !isNaN(newRate)) {
+            slot.hourlyRate = parseFloat(newRate);
+            await fetch('/parking/slots/' + id, { method: 'PUT', headers: { 'Authorization': jwtToken, 'Content-Type': 'application/json' }, body: JSON.stringify(slot) });
+            loadSlots();
+        }
+    }
+
+    async function book(id) {
+        const plateInput = document.getElementById('plate-' + id);
+        const driverInput = document.getElementById('driver-' + id);
+        if (!plateInput || !driverInput) {
+            alert("Please hard refresh the page (Ctrl+Shift+R) - the old cache is still active!");
+            return;
+        }
+
+        if(!plateInput.value || !driverInput.value) return alert("Please enter both Vehicle Number and Driver Name.");
+
+        await fetch('/parking/book/' + id, {
+            method: 'POST',
+            headers: { 'Authorization': jwtToken, 'Content-Type': 'application/json' },
+            body: JSON.stringify({driverName: driverInput.value, vehiclePlate: plateInput.value, vehicleType: document.getElementById('type-' + id).value})
+        });
+        loadSlots(); 
+    }
+
+    async function leave(id) {
+        const res = await fetch('/parking/leave/' + id, { method: 'POST', headers: { 'Authorization': jwtToken } });
+        const data = await res.json();
+        alert(data.message);
+        loadSlots();
+    }
+
+    async function deleteSlot(id) {
+        await fetch('/parking/slots/' + id, { method: 'DELETE', headers: { 'Authorization': jwtToken } });
+        loadSlots();
+    }
+</script>
+</body>
+</html>
